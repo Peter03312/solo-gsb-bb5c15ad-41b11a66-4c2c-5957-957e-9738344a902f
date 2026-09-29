@@ -1,0 +1,15 @@
+services:
+  venue-countdown:
+    build: .
+    image: venue-countdown:latest
+    container_name: venue-countdown
+    ports:
+      # 宿主机端口默认 3000；可用 `PORT=8080 docker compose up --build` 改宿主机映射端口
+      - "${PORT:-3000}:3000"
+    restart: unless-stopped
+    healthcheck:
+      # 客户端未构建时服务端返回 502，构建后返回 200
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5

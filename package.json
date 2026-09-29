@@ -1,0 +1,24 @@
+{
+  "name": "venue-countdown",
+  "private": true,
+  "version": "1.0.0",
+  "description": "会场发言计时联屏 Web 应用：单控制端 + 投屏端，Node.js / React / WebSocket",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "install:all": "npm install",
+    "build": "npm run build -w client",
+    "test": "node test/guard.test.mjs && node test/agenda.test.mjs && node test/scenes.test.mjs && node test/cue.test.mjs && node test/marker.test.mjs && node test/inspection.test.mjs && node test/devices.test.mjs && node test/rehearsal.test.mjs && node test/device.test.mjs && node test/handover.test.mjs && node test/scene.test.mjs && node test/e2e.mjs && node test/lease.test.mjs",
+    "start": "npm run start -w server",
+    "dev:server": "npm run dev -w server",
+    "dev:client": "npm run dev -w client",
+    "up": "docker compose up --build",
+    "up:detached": "docker compose up --build -d",
+    "down": "docker compose down"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
