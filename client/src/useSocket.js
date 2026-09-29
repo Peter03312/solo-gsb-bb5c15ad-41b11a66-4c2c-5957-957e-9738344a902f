@@ -5,10 +5,12 @@ import {
   judgeCue,
   judgeHandover,
   judgeScene,
+  judgeBlackout,
   INITIAL_BASELINE,
   INITIAL_CUE_BASELINE,
   INITIAL_HANDOVER_BASELINE,
   INITIAL_SCENE_BASELINE,
+  INITIAL_BLACKOUT_BASELINE,
 } from './guard.js';
 
 // 单一 WebSocket 连接管理：
@@ -33,6 +35,7 @@ export function useSocket({ role, screenRef }) {
   const [sceneLib, setSceneLib] = useState(null);      // 控制台：场景库（编排 + 激活版本）
   const [scene, setScene] = useState(null);            // 投屏：当前激活场景的完整快照
   const [screenConflict, setScreenConflict] = useState(false); // 投屏：同一 ID 被新连接顶替
+  const [blackout, setBlackout] = useState(null);  // 全场遮屏：{ seq, active, reason }
   const [connState, setConnState] = useState('connecting'); // connecting | open | reconnecting
   const [control, setControl] = useState({ granted: false });
   const [myId, setMyId] = useState(null);              // 本连接服务端分配的 clientId
@@ -48,8 +51,10 @@ export function useSocket({ role, screenRef }) {
   const cueBaselineRef = useRef({ ...INITIAL_CUE_BASELINE });
   const handoverBaselineRef = useRef({ ...INITIAL_HANDOVER_BASELINE });
   const sceneBaselineRef = useRef({ ...INITIAL_SCENE_BASELINE });
+  const blackoutBaselineRef = useRef({ ...INITIAL_BLACKOUT_BASELINE });
   const reportedSceneRef = useRef(0); // 已上报“已替换”的场景激活版本（重连同版本不重复上报）
   const reportedCueRef = useRef(0); // 已上报“已显示”的 cueSeq（同一条补发不重复上报）
+  const blackoutRef = useRef(null); // 当前遮屏状态镜像：供 cue 等其他消息分支即时判断
   const screenRefRef = useRef(screenRef);
   screenRefRef.current = screenRef;
 
@@ -84,6 +89,15 @@ export function useSocket({ role, screenRef }) {
 
   const clearHandover = useCallback(() => setHandover(null), []);
 
+  // 全场遮屏：持有者开启（带 1~30 字说明）/ 解除（携带当前轮次 round）
+  const blackoutOn = useCallback((reason) => {
+    send({ command: 'blackout_on', reason: String(reason ?? '') });
+  }, [send]);
+
+  const blackoutOff = useCallback((round) => {
+    send({ command: 'blackout_off', round });
+  }, [send]);
+
   const clearError = useCallback(() => setLastError(null), []);
 
   // 投屏修改显示名：持久化后重发注册（服务端立即改名并广播）
@@ -95,7 +109,9 @@ export function useSocket({ role, screenRef }) {
 
   // 投屏人工确认当前提示：本地立即收起覆盖层（确认随后随名单对账），
   // 迟到的旧提示不会重新弹出——守卫只认 cueSeq 更高/相等。
+  // 遮屏期间投屏不露出提示，也不允许确认（服务端同样拒绝），避免遮屏期间状态被推进。
   const ackCue = useCallback((cueSeq) => {
+    if (blackoutRef.current?.active) return;
     const sid = screenRefRef.current;
     if (!sid) return;
     send({ command: 'cue_ack', screenId: sid.id, cueSeq });
@@ -154,6 +170,7 @@ export function useSocket({ role, screenRef }) {
           cueBaselineRef.current = { currentEpoch: msg.epoch, cueSeq: 0 };
           handoverBaselineRef.current = { currentEpoch: msg.epoch, seq: 0 };
           sceneBaselineRef.current = { currentEpoch: msg.epoch, activeVersion: 0 };
+          blackoutBaselineRef.current = { currentEpoch: msg.epoch, seq: 0 };
           reportedCueRef.current = 0;
           reportedSceneRef.current = 0;
           // 新纪元：丢弃上一纪元残留的门禁横幅（权威状态随 inspection 首包重建）
@@ -167,6 +184,30 @@ export function useSocket({ role, screenRef }) {
           if (!verdict.accept) return;
           baselineRef.current = { currentEpoch: verdict.epoch, currentVersion: verdict.version };
           setSnap({ ...msg, receivedAtMono: monoNow() });
+
+          // 遮屏状态随快照兜底对账（首包乱序/漏收 blackout 消息时）：只接受同 epoch 且
+          // 事件 seq 不更旧的状态；权威翻转仍以独立 blackout 消息为准。
+          if (msg.blackout && typeof msg.blackout === 'object') {
+            const bVerdict = judgeBlackout(blackoutBaselineRef.current, {
+              epoch: msg.epoch, seq: msg.blackout.seq,
+            });
+            if (bVerdict.accept) {
+              blackoutBaselineRef.current = { currentEpoch: bVerdict.epoch, seq: bVerdict.seq };
+              setBlackout((prev) => {
+                if (prev && (prev.seq > msg.blackout.seq)) return prev;
+                const merged = {
+                  seq: msg.blackout.seq,
+                  round: msg.blackout.round ?? prev?.round ?? 0,
+                  active: !!msg.blackout.active,
+                  // 周期快照只带 seq/round/active：开启轮次沿用 blackout 消息已同步的说明
+                  reason: msg.blackout.reason
+                    ?? (prev && prev.seq === msg.blackout.seq ? prev.reason : null),
+                };
+                blackoutRef.current = merged;
+                return merged;
+              });
+            }
+          }
 
           // 控制权归属对账（可能被其他控制台顶掉/超时释放）
           const mine = msg.holderId != null && msg.holderId === myIdRef.current;
@@ -357,10 +398,37 @@ export function useSocket({ role, screenRef }) {
           const nextCue = { cueSeq: msg.cueSeq, cueType: msg.cueType, text: msg.text };
           setCue(nextCue);
           setScreenConflict(false);
-          // 新提示（或重启纪元后的首条）通知服务端“已上屏”；同一条补发不重复上报
-          if (verdict.fresh || reportedCueRef.current !== msg.cueSeq) {
+          // 遮屏期间服务端不下发提示；此处兜底：若仍收到（理论上不会），也不上报已显示。
+          // 新提示（或重启纪元后的首条）通知服务端“已上屏”；同一条补发不重复上报。
+          // 遮屏解除时服务端会重新下发待显示提示，由该重发路径正常上报。
+          if (!blackoutRef.current?.active
+            && (verdict.fresh || reportedCueRef.current !== msg.cueSeq)) {
             reportedCueRef.current = msg.cueSeq;
             send({ command: 'cue_displayed', screenId: sid?.id, cueSeq: msg.cueSeq });
+          }
+          return;
+        }
+
+        if (msg.type === 'blackout') {
+          // 全场遮屏：epoch + 轮次 seq 守卫。旧纪元 / 更旧轮次（含旧轮次迟到解除）丢弃，
+          // 相等轮次幂等（首包补发/重连），更大轮次为新一轮开启或解除。
+          const verdict = judgeBlackout(blackoutBaselineRef.current, msg);
+          if (!verdict.accept) return;
+          blackoutBaselineRef.current = { currentEpoch: verdict.epoch, seq: verdict.seq };
+          const nextBlackout = {
+            seq: msg.seq,
+            round: msg.round ?? 0,
+            active: !!msg.active,
+            reason: msg.reason ?? null,
+          };
+          blackoutRef.current = nextBlackout;
+          setBlackout(nextBlackout);
+          // 解除遮屏：按最新场景/当前计时与议程恢复后，再呈现“待显示”的提示。
+          // 服务端在同一原子步骤重新下发未确认最新提示（cue 消息随后到达）；
+          // 本地先收起遮屏期间可能残留的旧提示上屏态，等待重发，绝不回放已覆盖提示。
+          if (!nextBlackout.active) {
+            setCue(null);
+            reportedCueRef.current = 0; // 强制解除后的重发提示重新上报“已显示”
           }
           return;
         }
@@ -456,6 +524,7 @@ export function useSocket({ role, screenRef }) {
     control,
     myId,
     handover,
+    blackout,
     lastError,
     send,
     acquire,
@@ -467,5 +536,7 @@ export function useSocket({ role, screenRef }) {
     cancelHandover,
     redeemHandover,
     clearHandover,
+    blackoutOn,
+    blackoutOff,
   };
 }

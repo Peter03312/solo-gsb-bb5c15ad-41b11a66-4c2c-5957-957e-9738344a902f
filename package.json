@@ -10,7 +10,7 @@
   "scripts": {
     "install:all": "npm install",
     "build": "npm run build -w client",
-    "test": "node test/guard.test.mjs && node test/agenda.test.mjs && node test/scenes.test.mjs && node test/cue.test.mjs && node test/marker.test.mjs && node test/inspection.test.mjs && node test/devices.test.mjs && node test/rehearsal.test.mjs && node test/device.test.mjs && node test/handover.test.mjs && node test/scene.test.mjs && node test/e2e.mjs && node test/lease.test.mjs",
+    "test": "node test/guard.test.mjs && node test/agenda.test.mjs && node test/scenes.test.mjs && node test/cue.test.mjs && node test/marker.test.mjs && node test/inspection.test.mjs && node test/devices.test.mjs && node test/rehearsal.test.mjs && node test/device.test.mjs && node test/handover.test.mjs && node test/scene.test.mjs && node test/blackout.test.mjs && node test/e2e.mjs && node test/lease.test.mjs",
     "start": "npm run start -w server",
     "dev:server": "npm run dev -w server",
     "dev:client": "npm run dev -w client",

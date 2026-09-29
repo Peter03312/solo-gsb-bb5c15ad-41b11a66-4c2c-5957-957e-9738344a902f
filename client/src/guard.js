@@ -94,3 +94,31 @@ export function judgeScene(baseline, msg) {
     activeVersion: msg.activeVersion,
   };
 }
+
+// 全场遮屏（blackout）守卫（纯函数，便于单测）：
+// 遮屏事件带服务进程 epoch 与全服务单调事件序号 seq（开启与解除各占一个事件，
+// 开启时轮次 round 递增）。规则：
+//   - 旧纪元残留一律丢弃（服务重启后旧轮次不可能再有效）；
+//   - seq 更大：接受（新一轮开启 / 某轮解除都靠它，天然有序：开→解除→再开）；
+//   - seq 相等：幂等接受（首包补发 / 重连同状态），不重复处理副作用；
+//   - seq 更小：旧事件迟到，丢弃——尤其旧轮次的“解除”绝不能关闭新一轮遮屏。
+export const INITIAL_BLACKOUT_BASELINE = Object.freeze({ currentEpoch: null, seq: 0 });
+
+export function judgeBlackout(baseline, msg) {
+  if (baseline.currentEpoch === null) {
+    return { accept: true, fresh: true, replay: false, epoch: msg.epoch, seq: msg.seq };
+  }
+  if (msg.epoch !== baseline.currentEpoch) {
+    return { accept: false }; // 服务端重启前的残留遮屏消息
+  }
+  if (msg.seq < baseline.seq) {
+    return { accept: false }; // 旧事件迟到（含旧轮次的解除），不得回滚当前遮屏状态
+  }
+  return {
+    accept: true,
+    fresh: msg.seq > baseline.seq,
+    replay: msg.seq === baseline.seq,
+    epoch: msg.epoch,
+    seq: msg.seq,
+  };
+}

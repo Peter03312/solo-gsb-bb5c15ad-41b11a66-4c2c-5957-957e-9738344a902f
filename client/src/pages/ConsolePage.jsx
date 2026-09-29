@@ -9,14 +9,16 @@ import InspectionPanel from './InspectionPanel.jsx';
 import DevicePanel from './DevicePanel.jsx';
 import RehearsalPanel from './RehearsalPanel.jsx';
 import HandoverPanel from './HandoverPanel.jsx';
+import BlackoutPanel from './BlackoutPanel.jsx';
 
 // 控制台：同一时刻全服务仅一个实例可持有控制权。
 export default function ConsolePage() {
   const {
     snap, screens, markers, inspection, gateEvent, devices, connState, control, myId, handover, lastError,
-    sceneLib,
+    sceneLib, blackout,
     send, acquire, release, clearError,
     createHandover, cancelHandover, redeemHandover, clearHandover,
+    blackoutOn, blackoutOff,
   } = useSocket({ role: 'console' });
   const [minutes, setMinutes] = useState(5);
   const [seconds, setSeconds] = useState(0);
@@ -72,6 +74,9 @@ export default function ConsolePage() {
             <span className="badge badge-held">🎙 持有控制权</span>
           ) : (
             <span className="badge badge-locked">🔒 未持有控制权</span>
+          )}
+          {blackout?.active && (
+            <span className="badge badge-blackout">🛑 全场遮屏中 · 第 {blackout.round} 轮</span>
           )}
         </div>
       </header>
@@ -146,6 +151,15 @@ export default function ConsolePage() {
           </div>
         </section>
       )}
+
+      <BlackoutPanel
+        blackout={blackout}
+        canEdit={control.granted}
+        onOn={blackoutOn}
+        onOff={blackoutOff}
+        lastError={lastError}
+        onClearError={clearError}
+      />
 
       <InspectionPanel
         inspection={inspection}

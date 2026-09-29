@@ -1298,3 +1298,72 @@ body {
 .reh-resolved { color: var(--green); }
 .reh-occ-delta { font-size: 12px; }
 .reh-occ-hot { box-shadow: inset 3px 0 0 var(--red); }
+
+/* ---------------- 全场遮屏（blackout） ---------------- */
+.badge-blackout {
+  background: rgba(255, 68, 68, .16);
+  color: var(--red);
+  border: 1px solid rgba(255, 68, 68, .5);
+  animation: pulse-red 1.4s ease-in-out infinite;
+}
+
+.blackout-panel.blackout-active {
+  border-color: rgba(255, 68, 68, .6);
+  box-shadow: 0 0 0 1px rgba(255, 68, 68, .35) inset;
+}
+.blackout-status { display: flex; flex-direction: column; gap: 10px; margin-bottom: 8px; }
+.blackout-status-head { display: flex; align-items: center; gap: 10px; font-size: 16px; }
+.blackout-live-dot {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--red); animation: pulse-red 1.2s ease-in-out infinite;
+}
+.blackout-seq {
+  font-size: 12px; color: var(--muted);
+  border: 1px solid #3a4663; border-radius: 10px; padding: 1px 8px;
+}
+.blackout-current-reason { font-size: 15px; color: var(--text); }
+.blackout-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.blackout-actions input {
+  flex: 1 1 280px; min-width: 220px;
+  background: var(--panel-2); border: 1px solid #303b56; border-radius: 8px;
+  color: var(--text); padding: 8px 10px; font-size: 14px;
+}
+.btn-blackout-on {
+  background: #3a2230;
+  border-color: rgba(255, 68, 68, .55);
+  color: #ff9b9b;
+}
+.btn-blackout-on:hover:not(:disabled) { background: #4d2a3b; }
+.btn-blackout-off { font-weight: 700; }
+
+/* 投屏遮屏画面：全屏不透明，压过场景、提示覆盖层与屏幕名片 */
+.blackout-curtain {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: #000;
+  color: #f4f6fb;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  padding: 5vw;
+  text-align: center;
+}
+.blackout-curtain-mark { font-size: clamp(48px, 8vw, 110px); line-height: 1; }
+.blackout-curtain-title {
+  font-size: clamp(40px, 7vw, 104px);
+  font-weight: 800;
+  letter-spacing: 0.4em;
+  padding-left: 0.4em;
+}
+.blackout-curtain-reason {
+  font-size: clamp(22px, 3.4vw, 46px);
+  font-weight: 600;
+  max-width: 80vw;
+  line-height: 1.5;
+  color: #d7dce8;
+}
+/* 遮屏期间场景仍保留在 DOM（继续接收后台快照/场景替换），但视觉上完全遮盖 */
+.scene-stage-hidden { visibility: hidden; }

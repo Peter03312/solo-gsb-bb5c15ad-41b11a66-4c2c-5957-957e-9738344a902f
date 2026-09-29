@@ -5,10 +5,12 @@ import {
   judgeCue,
   judgeHandover,
   judgeScene,
+  judgeBlackout,
   INITIAL_BASELINE,
   INITIAL_CUE_BASELINE,
   INITIAL_HANDOVER_BASELINE,
   INITIAL_SCENE_BASELINE,
+  INITIAL_BLACKOUT_BASELINE,
 } from '../client/src/guard.js';
 
 let n = 0;
@@ -171,6 +173,59 @@ check('scene：INITIAL_SCENE_BASELINE 下首条兜底接受（hello 丢失场景
   assert.equal(v.accept, true);
   assert.equal(v.fresh, true);
   assert.equal(v.activeVersion, 7);
+});
+
+// ---------------- 全场遮屏（blackout） ----------------
+let boBase = { currentEpoch: 'E1', seq: 0 };
+
+check('blackout：INITIAL 基线首条兜底接受（开启轮次）', () => {
+  const v = judgeBlackout(INITIAL_BLACKOUT_BASELINE, { epoch: 'E1', seq: 1, active: true });
+  assert.equal(v.accept, true);
+  assert.equal(v.fresh, true);
+  boBase = { currentEpoch: v.epoch, seq: v.seq };
+});
+
+check('blackout：相等 seq 幂等接受（首包补发/重连同状态）但非 fresh', () => {
+  const v = judgeBlackout(boBase, { epoch: 'E1', seq: 1, active: true, reason: '设备调试' });
+  assert.equal(v.accept, true);
+  assert.equal(v.fresh, false);
+  assert.equal(v.replay, true);
+});
+
+check('blackout：更大 seq 的解除接受（fresh）', () => {
+  const v = judgeBlackout(boBase, { epoch: 'E1', seq: 2, active: false });
+  assert.equal(v.accept, true);
+  assert.equal(v.fresh, true);
+  boBase = { currentEpoch: v.epoch, seq: v.seq };
+});
+
+check('blackout：更旧 seq 的迟到解除丢弃（旧轮次不能关闭新一轮遮屏）', () => {
+  // 当前在第 3 轮遮屏（事件 seq=5），第 1、2 轮的解除（seq=2、4）迟到
+  const base3 = { currentEpoch: 'E1', seq: 5 };
+  assert.equal(judgeBlackout(base3, { epoch: 'E1', seq: 2, active: false }).accept, false);
+  assert.equal(judgeBlackout(base3, { epoch: 'E1', seq: 4, active: false }).accept, false);
+});
+
+check('blackout：旧纪元残留消息丢弃', () => {
+  const v = judgeBlackout(boBase, { epoch: 'E0', seq: 99, active: false });
+  assert.equal(v.accept, false);
+});
+
+check('blackout：连续多轮开启（on→on→on）后只有最新轮次的解除为更新事件', () => {
+  let base = { currentEpoch: 'E2', seq: 0 };
+  for (const seq of [1, 3, 5]) {
+    const v = judgeBlackout(base, { epoch: 'E2', seq, active: true });
+    assert.equal(v.accept, true);
+    assert.equal(v.fresh, true);
+    base = { currentEpoch: v.epoch, seq: v.seq };
+  }
+  // 第 1、2 轮的解除（事件 seq=2、4）都迟到，均不得关闭第 3 轮
+  assert.equal(judgeBlackout(base, { epoch: 'E2', seq: 2, active: false }).accept, false);
+  assert.equal(judgeBlackout(base, { epoch: 'E2', seq: 4, active: false }).accept, false);
+  // 第 3 轮解除（事件 seq=6）接受
+  const off = judgeBlackout(base, { epoch: 'E2', seq: 6, active: false });
+  assert.equal(off.accept, true);
+  assert.equal(off.fresh, true);
 });
 
 console.log(`\n守卫单测：${n} 通过，0 失败`);

@@ -20,6 +20,10 @@
 （新增/缺口增大醒目标注，含固定环节压缩与跨午夜），不改计时、议程与投屏，切换环节
 或断线重连后清空重算。唯一控制权支持**控制台交接**：持有者生成 60 秒有效的一次性
 交接码，接收方输入后由服务端原子接管，计时 / 议程 / 巡检 / 场景 / 提示状态连续保持、投屏不中断。
+控制台还可开启**全场遮屏**：会场出现不宜上屏的临时内容时，持有者填写 1～30 字说明一键遮盖
+全部投屏（仅显示遮屏画面与说明），计时与议程照常推进，期间仍可切换场景、发送后台提示
+（投屏不露出、不上报，每屏只留最新未确认提示）；按轮次解除后各屏按最新场景、当前计时与
+议程恢复并呈现待显示提示，旧轮次的迟到解除不能关闭新一轮遮屏。
 
 - **后端**：Node.js 原生 HTTP + [`ws`](https://github.com/websockets/ws) WebSocket
 - **前端**：React 18 + Vite（控制台 `/console`、投屏 `/display`）
@@ -38,8 +42,8 @@ docker compose up --build
 | 页面 | 地址 | 说明 |
 | --- | --- | --- |
 | 首页 | <http://localhost:3000/> | 入口导航 |
-| 控制台 | <http://localhost:3000/console> | 维护议程、设定当前环节、开始/暂停/继续/结束本环节（同一时刻仅一个可操作）；可用“结束时间预演”本地模拟最终结束点与设备周转冲突；底部可生成 60 秒一次性交接码把控制权无缝交给另一台 `/console` |
-| 投屏页 | <http://localhost:3000/display> | 大屏展示当前环节、下一环节及其预计开始时间，可在任意多块屏幕同时打开；交接期间画面不中断 |
+| 控制台 | <http://localhost:3000/console> | 维护议程、设定当前环节、开始/暂停/继续/结束本环节（同一时刻仅一个可操作）；可用“结束时间预演”本地模拟最终结束点与设备周转冲突；可一键“全场遮屏”遮盖全部投屏（计时照常）；底部可生成 60 秒一次性交接码把控制权无缝交给另一台 `/console` |
+| 投屏页 | <http://localhost:3000/display> | 大屏展示当前环节、下一环节及其预计开始时间，可在任意多块屏幕同时打开；全场遮屏时只显示遮屏画面与说明；交接期间画面不中断 |
 
 ### Docker / Compose 启动说明
 
@@ -230,6 +234,32 @@ docker run --rm -p 3000:3000 --name venue-countdown venue-countdown
    交接码只单播给生成它的持有者，广播与其他控制台首包均不含码。交接状态仅存服务端内存，
    服务 / 容器重启即清空。
 
+### 全场遮屏（blackout）
+
+会场临时出现不宜上屏的内容（设备调试画面、嘉宾临时回避、敏感信息误入投屏源）时，
+一键遮盖全场投屏而不打断会议节奏：
+
+1. 持有者在控制台 **全场遮屏** 面板填写 **1～30 字说明**（如“设备临时调试”“嘉宾临时回避”），
+   点 **开启全场遮屏**：所有投屏立即只显示黑色遮屏画面与说明文字（场景内容、倒计时、
+   议程、后台提示均不露出），控制台头部同步显示“🛑 全场遮屏中 · 第 N 轮”。
+2. **计时与议程照常推进**：遮屏不暂停计时、不冻结议程，运行/归零/超时偏差与正常时完全一致；
+   遮屏期间仍可正常开始/暂停/推进议程、**切换场景**、发送后台提示与记录现场标记。
+3. **遮屏期间后台提示只排队不上屏**：持有者仍可向各屏发送提示，服务端每屏只保留
+   **最新一条未确认提示**（新提示覆盖旧提示）；投屏既不显示提示，也不会上报
+   “已显示 / 已确认”（投屏自行上报也被服务端忽略），控制台侧状态停留在**未送达**。
+4. **新连接或重连的投屏先遵循当前遮屏状态**：遮屏中途接入（含刷新、断线恢复）的投屏
+   立即显示遮屏画面与说明，注册时不补发提示；其在后台仍完成当前场景的一次性替换。
+5. 点 **解除遮屏**（携带当前轮次）：服务端在同一原子步骤广播解除并为每屏补发
+   **待显示的最新未确认提示**；各屏按**最新场景、当前计时与议程**恢复，再呈现待显示提示——
+   **不回放旧场景，也不回放已被覆盖的旧提示**；已确认的提示不再出现。
+6. **轮次防回滚**：每次开启（含遮屏中改说明后“更新说明并续遮”）都开启**新一轮**
+   （轮次 `round` 与事件 `seq` 递增）；解除必须携带对应轮次，**旧轮次的迟到解除消息
+   不能关闭新一轮遮屏**（服务端返回 `BAD_BLACKOUT_SEQ`），更旧事件在投屏侧也被
+   epoch + seq 守卫丢弃。未遮屏时重复解除幂等。
+7. 仅持有者可开启 / 解除（非持有者 `NOT_CONTROLLER`）；说明为空或超过 30 字返回
+   `BAD_BLACKOUT` 且状态不变；解除缺少合法轮次返回 `BAD_BLACKOUT`。遮屏状态仅存服务端
+   内存，服务 / 容器重启即解除（投屏屏幕 ID 与提示的既有内存规则不变）。
+
 投屏页建议按 **F11** 全屏。另起一台电脑/平板做控制台时，把 `localhost` 换成本机局域网 IP 即可。
 
 ## 本地开发（不用 Docker）
@@ -334,6 +364,19 @@ npm install && npm run build && npm start
     持有者释放 / 断线 / 心跳失联时代码同步作废（`cancelled`）；
   - 旧持有者的迟到心跳 / 命令只走 `holder.id` 校验，**不能夺回控制权或改写状态**；
     交接码仅单播给生成者，交接事件不发给投屏连接，状态仅存服务端内存。
+- **全场遮屏**：
+  - 持有者填写 **1～30 字说明**开启：全部投屏只显示遮屏画面与说明，场景内容与提示均不露出；
+    **计时与议程照常推进**，遮屏期间可继续切换场景、发送后台提示、记录标记；
+  - 遮屏期间提示**只排队不上屏**：每屏只保留最新未确认提示，投屏收不到 `cue`、
+    其“已显示/已确认”上报被服务端忽略（状态停留未送达）；新连接 / 重连投屏先遵循遮屏状态、
+    注册不补发提示；
+  - 解除（携带当前轮次）在同一原子步骤广播恢复并补发各屏最新未确认提示：
+    各屏按**最新场景、当前计时与议程**恢复后再呈现待显示提示，**不回放旧场景或已覆盖提示**，
+    已确认提示不出现；
+  - 状态为轮次化事件：开启 / 解除各占一个严格递增 `seq`，开启时轮次 `round` 递增；
+    旧纪元 / 更旧 `seq` 的遮屏消息（含旧轮次迟到解除）被 epoch + seq 守卫丢弃，
+    服务端对轮次不匹配的解除返回 `BAD_BLACKOUT_SEQ`；未遮屏时解除幂等；
+  - 仅持有者可操作（`NOT_CONTROLLER`），说明非法 `BAD_BLACKOUT`；仅存内存，重启即解除。
 
 ## 设计要点（对应可靠性要求）
 
@@ -414,6 +457,18 @@ npm install && npm run build && npm start
     `(deviceId,a,b)` 键对账 shortfall 差异分类为新增 / 缺口增大 / 缓解 / 不变 / 消失。
     当前环节切换、epoch 变化（服务重启）与断线重连由面板本地清空旧输入，重新按
     新快照计算——服务端、投屏、其他控制台对预演完全无感知。
+13. **全场遮屏为轮次化事件、且只是显示层遮盖**：遮屏状态（`blackout.js` 纯函数
+    校验/轮次推进）独立于计时、议程、场景与提示——开启/解除**从不触碰**计时锚点、议程、
+    场景激活版本或各屏提示记录，因此“计时与议程照常推进、解除后按最新场景恢复”由结构保证：
+    遮屏期间 `scene_switch` 与周期快照照常下发（投屏在后台完成替换并照常确认），
+    `deliverCue` 在遮屏期间整体短路（不向任何投屏下发 `cue`），`cue_displayed`/`cue_ack`
+    在遮屏期间一律忽略，保证提示状态停留在上屏前；解除的同一消息处理内先广播恢复、
+    再统一补发各屏“最新未确认”提示，被覆盖与已确认提示因只存最新一条而天然不回放。
+    每次开启产生新一轮（`round` 递增），开启与解除各占一个全服务单调事件 `seq`，
+    解除必须携带对应 `round`——旧轮次的迟到解除在服务端返回 `BAD_BLACKOUT_SEQ`、
+    在投屏侧被 `judgeBlackout` 的 epoch + seq 守卫丢弃，绝不能关闭新一轮遮屏；
+    投屏注册/重连在 `screen_register` 流程内单播当前遮屏状态并跳过提示补发，
+    保证新连接先遵循遮屏状态。非持有者与非法说明被拒绝时状态不变，状态仅存内存。
 
 ## WebSocket 协议（`/ws`）
 
@@ -431,6 +486,12 @@ npm install && npm run build && npm start
 // 错误码：NOT_CONTROLLER（非持有者生成/取消、投屏核销、旧持有者迟到心跳/命令）、
 //         HANDOVER_NONE（无等待码/码已用/已取消）、HANDOVER_BAD_CODE（6 位格式错或码错，码仍有效）、
 //         HANDOVER_SELF（持有者核销自己的码）、HANDOVER_EXPIRED（核销撞上到期点；终态以 expired 广播为准）
+
+// 全场遮屏（blackout_on / blackout_off 均仅持有者）
+{ "command": "blackout_on", "reason": "设备临时调试" }  // 开启新一轮遮屏/更新说明（1~30 字）
+{ "command": "blackout_off", "round": 1 }               // 携带所针对轮次解除；未遮屏时幂等
+// 错误码：BAD_BLACKOUT（说明为空/超 30 字、解除缺合法 round）、
+//         BAD_BLACKOUT_SEQ（旧轮次迟到解除，round 与当前轮次不一致）、NOT_CONTROLLER（非持有者）
 { "command": "set_duration", "durationMs": 300000 }
 { "command": "start" }
 { "command": "pause" }
@@ -498,6 +559,7 @@ npm install && npm run build && npm start
   "warning": false, "finished": false,
   "locked": true, "holderId": "c-xxxx",
   "scene": { "activeVersion": 3 }, // 当前场景激活版本（0=启动后尚未切换）
+  "blackout": { "seq": 0, "round": 0, "active": false }, // 当前遮屏事件/轮次状态（兜底对账）
   "agenda": {
     "seq": 3, "currentId": "a-1", "elapsedMs": 45000, "deviationMs": -15000,
     "items": [ { "id": "a-1", "name": "开场致辞", "startMs": 33300000,
@@ -523,6 +585,14 @@ npm install && npm run build && npm start
 { "type": "handover", "epoch": "...", "seq": 6, "state": "cancelled",
   "reason": "cancelled|released|disconnected|timeout", "holderId": "c-xxxx" }
 { "type": "handover", "epoch": "...", "seq": 0, "state": "idle" }     // 连接首包/无等待码
+
+// 全场遮屏（控制台与投屏同口径；连接首包与投屏注册时各下发一次，开启/解除时广播）
+{ "type": "blackout", "epoch": "...", "seq": 1, "round": 1,
+  "active": true, "reason": "设备临时调试" }   // seq=遮屏事件序号（开/解除各+1）；round=轮次（每次开启+1）
+{ "type": "blackout", "epoch": "...", "seq": 2, "round": 1,
+  "active": false, "reason": null }            // 解除（携带同一轮次；解除后控制台再补发未确认 cue）
+// 守卫：旧纪元 / 更小 seq 的 blackout（含旧轮次迟到解除）一律丢弃；周期快照亦内嵌
+//       blackout: { seq, round, active } 兜底对账
 // 议程相关错误码：BAD_AGENDA（时间/时长非法或条目超限）、NOT_FOUND、NO_CURRENT
 
 // 后台提示相关
@@ -619,7 +689,8 @@ npm install && npm run build && npm start
 ├── package.json             # npm workspaces 根清单
 ├── server/
 │   └── src/
-│       ├── index.js         # HTTP 静态服务 + WebSocket 状态机/租约 + 屏幕与后台提示 + 现场标记 + 巡检门禁 + 设备占用 + 控制台交接 + 投屏场景编排
+│       ├── index.js         # HTTP 静态服务 + WebSocket 状态机/租约 + 屏幕与后台提示 + 现场标记 + 巡检门禁 + 设备占用 + 控制台交接 + 投屏场景编排 + 全场遮屏
+│       ├── blackout.js      # 全场遮屏纯函数（说明校验 / 轮次 round 与事件 seq 推进 / 解除轮次校验）
 │       ├── agenda.js        # 议程偏差推演纯函数（顺延 / 固定点压缩 / 校验）
 │       ├── devices.js       # 共享设备占用纯函数（校验/规范化/已删除绑定裁剪/跨午夜线性展开/周转冲突）
 │       ├── rehearsal.js     # 结束时间预演纯函数（快照反推/本地重演/冲突对账；控制台直接打包复用，不触达服务端）
@@ -628,19 +699,19 @@ npm install && npm run build && npm start
 └── client/
     ├── vite.config.js       # 开发代理 /ws -> localhost:3000
     └── src/
-        ├── useSocket.js     # 自动重连、版本防回滚（快照+提示+场景+交接）、心跳续租、屏幕注册、标记/巡检/设备列表
+        ├── useSocket.js     # 自动重连、版本防回滚（快照+提示+场景+交接+遮屏）、心跳续租、屏幕注册、标记/巡检/设备列表
         ├── time.js          # 单调时钟插值、议程时钟格式化、挂钟时间/CSV 工具
-        ├── guard.js         # 快照版本守卫 + 提示 cueSeq 守卫 + 场景 activeVersion 守卫 + 交接 seq 守卫
+        ├── guard.js         # 快照守卫 + 提示 cueSeq 守卫 + 场景 activeVersion 守卫 + 交接 seq 守卫 + 遮屏 seq 守卫
         ├── screen.js        # 投屏持久屏幕 ID / 显示名（localStorage）
         ├── sceneMeta.js     # 场景模块/布局/尺寸等客户端共享常量
-        └── pages/           # ConsolePage / DisplayPage / HomePage / AgendaPanel / CuePanel / ScenePanel / MarkerPanel / InspectionPanel / DevicePanel / RehearsalPanel / HandoverPanel
+        └── pages/           # ConsolePage / DisplayPage / HomePage / AgendaPanel / CuePanel / ScenePanel / MarkerPanel / InspectionPanel / DevicePanel / RehearsalPanel / HandoverPanel / BlackoutPanel
 ```
 
 ## 测试
 
 ```bash
 npm test
-# guard.test.mjs       快照版本守卫 + 提示 cueSeq 守卫 + 场景 activeVersion 守卫 + 交接 seq 守卫纯函数
+# guard.test.mjs       快照版本守卫 + 提示 cueSeq 守卫 + 场景 activeVersion 守卫 + 交接 seq 守卫 + 遮屏 seq 守卫纯函数
 # agenda.test.mjs      议程偏差推演纯函数（提前/超时/固定点压缩）
 # scenes.test.mjs      投屏场景库纯函数（模块/布局/尺寸校验、规范化、内容签名）
 # cue.test.mjs         后台提示端到端（注册/三态/覆盖/旧确认丢弃/补发/群发/校验，自带独立实例）
@@ -651,6 +722,7 @@ npm test
 # device.test.mjs      设备占用端到端（权限/校验/权威推演逐帧/固定与跨午夜/排序/议程删除绑定清理/重连恢复/投屏不收，自带独立实例）
 # handover.test.mjs    控制台交接端到端（权限/一次性码/错误码/原子转移/状态连续投屏不中断/旧持有者迟到命令/过期/取消/断线/重新生成，自带独立实例）
 # scene.test.mjs       投屏场景编排端到端（库校验/原子广播/一次性替换/各屏确认/重连恢复当前场景/切换不丢提示/旧场景消息守卫/标记摘要开关/角色过滤，自带独立实例）
+# blackout.test.mjs    全场遮屏端到端（权限/说明校验/轮次开关/计时照常/遮屏中切场景发提示不露出不上报/重连遵循/旧轮次解除拒绝/解除补发最新未确认提示/不回放，自带独立实例）
 # e2e.mjs              WebSocket 端到端冒烟（需先启动服务端，默认端口 3000，可用 PORT 覆盖）
 # lease.test.mjs       失联自动释放与接管（自带独立测试实例）
 ```

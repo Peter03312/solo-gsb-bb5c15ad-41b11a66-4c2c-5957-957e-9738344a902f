@@ -20,7 +20,7 @@ export default function DisplayPage() {
   const screenRef = useRef(null);
   if (!screenRef.current) screenRef.current = loadScreen();
   const {
-    snap, connState, cue, scene, screenConflict, renameScreen, ackCue,
+    snap, connState, cue, scene, screenConflict, renameScreen, ackCue, blackout,
   } = useSocket({ role: 'display', screenRef: screenRef.current });
   const [, force] = useState(0);
 
@@ -41,11 +41,13 @@ export default function DisplayPage() {
   const cueInline = !!modules?.cue?.enabled && !!cue;
 
   useEffect(() => {
-    document.title = cue
-      ? `${cue.text} · 后台提示`
-      : snap
-        ? `${formatTime(liveRemaining(snap))} · 发言计时`
-        : '发言计时投屏';
+    document.title = blackout?.active
+      ? '全场遮屏中'
+      : cue
+        ? `${cue.text} · 后台提示`
+        : snap
+          ? `${formatTime(liveRemaining(snap))} · 发言计时`
+          : '发言计时投屏';
   });
 
   const rootClass = cue
@@ -72,10 +74,10 @@ export default function DisplayPage() {
         </div>
       )}
 
-      {cue && !modules?.cue?.enabled ? (
+      {cue && !modules?.cue?.enabled && !blackout?.active ? (
         <CueOverlay cue={cue} onAck={() => ackCue(cue.cueSeq)} />
       ) : (
-        <div className={`scene-stage scene-${layout}`}>
+        <div className={`scene-stage scene-${layout} ${blackout?.active ? 'scene-stage-hidden' : ''}`} aria-hidden={blackout?.active || undefined}>
           {activeModules.map((key) => {
             const size = sizeOf(key);
             return (
@@ -88,7 +90,7 @@ export default function DisplayPage() {
                 {key === 'agenda' && <AgendaModule snap={snap} />}
                 {key === 'cue' && (
                   <CueModule
-                    cue={cue}
+                    cue={blackout?.active ? null : cue}
                     onAck={() => cue && ackCue(cue.cueSeq)}
                     inline={cueInline}
                   />
@@ -100,12 +102,28 @@ export default function DisplayPage() {
         </div>
       )}
 
-      <ScreenNameChip
-        screenRef={screenRef}
-        renameScreen={renameScreen}
-        sceneName={scene?.scene?.name ?? null}
-        activeVersion={scene?.activeVersion ?? null}
-      />
+      {!blackout?.active && (
+        <ScreenNameChip
+          screenRef={screenRef}
+          renameScreen={renameScreen}
+          sceneName={scene?.scene?.name ?? null}
+          activeVersion={scene?.activeVersion ?? null}
+        />
+      )}
+
+      {blackout?.active && <BlackoutCurtain reason={blackout.reason} round={blackout.round} />}
+    </div>
+  );
+}
+
+// 全场遮屏画面：不透明全屏覆盖，遮住场景内容与后台提示，仅展示说明文字。
+// 计时与议程在后台照常推进，解除后按最新场景与当前计时恢复。
+function BlackoutCurtain({ reason, round }) {
+  return (
+    <div className="blackout-curtain" data-blackout-round={round}>
+      <div className="blackout-curtain-mark">🛑</div>
+      <div className="blackout-curtain-title">全场遮屏</div>
+      <div className="blackout-curtain-reason">{reason || '临时不宜展示'}</div>
     </div>
   );
 }

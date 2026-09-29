@@ -32,6 +32,12 @@ import {
   pruneMissingItems,
   buildOccupancy,
 } from './devices.js';
+import {
+  defaultBlackout,
+  blackoutOn,
+  blackoutOff,
+  blackoutPayload,
+} from './blackout.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, '../../client/dist');
@@ -168,8 +174,10 @@ function broadcastScreens() {
   for (const c of clients) send(c.ws, msg);
 }
 
-// 在线立即单播；离线（ws 缺失）保持 pending，待其重连注册时补发
+// 在线立即单播；离线（ws 缺失）保持 pending，待其重连注册时补发。
+// 全场遮屏期间绝不下发提示（投屏不得露出提示）；待解除后由解除流程统一补发。
 function deliverCue(rec) {
+  if (blackout.active) return;
   if (rec.cue && rec.online && rec.ws && rec.ws.readyState === 1) {
     send(rec.ws, {
       type: 'cue',
@@ -213,8 +221,10 @@ function registerScreen(client, rawId, rawName) {
   send(client.ws, { type: 'screen_hello', screen: publicScreen(rec) });
   // 断线重连恢复“当前场景”：立即下发当前激活场景的完整快照（投屏一次性替换）
   sendSceneSwitch(client.ws, { replayed: true });
-  // 断线重连：补发该屏“未确认”的最新提示（已确认的不再出现）
-  if (rec.cue && rec.cue.status !== 'acknowledged') deliverCue(rec);
+  // 新连接/重连先遵循当前遮屏状态：遮屏中不补发提示（投屏不得露出提示），
+  // 待遮屏解除后由解除流程统一补发待显示提示。
+  if (!blackout.active && rec.cue && rec.cue.status !== 'acknowledged') deliverCue(rec);
+  send(client.ws, blackoutPayload(blackout, epoch));
   broadcastScreens();
 }
 
@@ -243,6 +253,9 @@ function reportCue(client, msg, nextStatus) {
   }
   const rec = screens.get(client.screenId);
   if (!rec || !rec.cue || !Number.isInteger(seq) || rec.cue.seq !== seq) return; // 迟到/未知：静默丢弃
+  // 全场遮屏期间投屏不上屏提示，任何“已显示/已确认”上报一律忽略（状态停留在上屏前），
+  // 解除后重新下发时投屏再上报，确保遮屏期间提示状态不被推进。
+  if (blackout.active) return;
   if (nextStatus === 'displayed' && rec.cue.status === 'pending') {
     rec.cue.status = 'displayed';
     broadcastScreens();
@@ -491,6 +504,25 @@ function remainingNow() {
 }
 
 // ---------------------------------------------------------------------------
+// 全场遮屏（blackout）
+// 会场出现不宜上屏的临时内容时，持有者填写 1~30 字说明并开启全场遮屏：
+// 所有投屏仅显示遮屏画面与说明，计时与议程照常推进（不暂停、不回退）。
+// 遮屏按轮次版本化（开启/解除各占一个严格递增事件 seq，开启时轮次 round 递增）：
+// 解除必须携带对应轮次 round，旧轮次的迟到解除消息不能关闭新一轮遮屏。遮屏期间：
+//   - 仍可切换场景（scene_switch 照常下发，投屏在后台替换，解除即按最新场景呈现）；
+//   - 仍可发送后台提示（每屏只保留最新未确认提示），但投屏不上屏、服务端不下发，
+//     也不接受“已显示/已确认”上报；解除后再呈现待显示提示（旧场景/被覆盖提示不回放）；
+//   - 新连接或重连的投屏先遵循当前遮屏状态（注册时不补发提示，只同步遮屏）。
+// 非持有者操作、说明非法、轮次不匹配一律拒绝且不改变状态；数据仅存内存，进程重启即解除。
+// ---------------------------------------------------------------------------
+const blackout = defaultBlackout();
+
+function broadcastBlackout() {
+  const msg = blackoutPayload(blackout, epoch);
+  for (const c of clients) send(c.ws, msg);
+}
+
+// ---------------------------------------------------------------------------
 // 设备巡检门禁（inspection）
 // 持有者可维护最多 30 项巡检项（名称/区域/必检标记），并逐项登记“通过/故障备注”。
 // 服务端仅在所有必检项均为通过、且放行所依据的清单版本未变化时允许“开始当前计时”。
@@ -661,6 +693,8 @@ function buildSnapshot() {
     locked: !!holder,
     holderId: holder ? holder.id : null,
     scene: { activeVersion }, // 当前场景激活版本：投屏随周期快照对账，重连/切换后与 scene_switch 一致
+    // 当前遮屏事件序号/轮次/是否遮屏：随快照兜底对账；状态翻转另有 blackout 消息即时广播。
+    blackout: { seq: blackout.seq, round: blackout.round, active: blackout.active },
     agenda: {
       seq: agenda.seq,
       currentId: agenda.currentId,
@@ -1157,6 +1191,35 @@ function handleCommand(client, msg) {
       return;
     }
 
+    case 'blackout_on': {
+      // 持有者开启全场遮屏 / 更新遮屏说明：说明需 1~30 字；校验失败状态不变。
+      // 已遮屏时再次开启产生新一轮（seq 递增），旧轮次的迟到解除将无法关闭它。
+      const r = blackoutOn(blackout, msg.reason);
+      if (r.error) {
+        fail(client, r.error, r.message);
+        return;
+      }
+      broadcastBlackout();
+      return;
+    }
+
+    case 'blackout_off': {
+      // 持有者解除遮屏：必须携带所针对的轮次 round（旧轮次迟到解除不能关闭新一轮）。
+      const r = blackoutOff(blackout, msg.round);
+      if (r.error) {
+        fail(client, r.error, r.message);
+        return;
+      }
+      if (!r.changed) return; // 未在遮屏：幂等静默
+      // 同一原子步骤：先广播解除（投屏按最新场景/当前计时与议程恢复），
+      // 再为每屏补发“未确认”的最新一条待显示提示；已被覆盖的旧提示、已确认提示不回放。
+      broadcastBlackout();
+      for (const rec of screens.values()) {
+        if (rec.online && rec.cue && rec.cue.status !== 'acknowledged') deliverCue(rec);
+      }
+      return;
+    }
+
     case 'set_duration': {
       const d = Number(msg.durationMs);
       if (!Number.isFinite(d) || d < MIN_DURATION_MS || d > MAX_DURATION_MS) {
@@ -1476,6 +1539,8 @@ wss.on('connection', (ws) => {
   // 投屏场景库（编排内容 + 当前激活版本）随首包下发；投屏注册后不再收到场景库更新，
   // 当前激活场景的完整快照在 screen_register 时单独单播（scene_switch）。
   send(ws, scenesLibraryPayload());
+  // 全场遮屏状态随首包下发：新连接立即遵循当前遮屏状态（遮屏中只显示遮屏画面与说明）。
+  send(ws, blackoutPayload(blackout, epoch));
 });
 
 setInterval(tick, TICK_MS).unref();
